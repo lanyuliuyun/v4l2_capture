@@ -1,4 +1,4 @@
 
 A image capture tool using v4l2.
 
-See capture for the usage.
+See capture.c for the usage.
