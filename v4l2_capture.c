@@ -424,12 +424,12 @@ void capture_onevent(int fd, int event, void* userdata)
 
             if (ioctl(capture->handle, VIDIOC_DQBUF, &buffer) != 0)
             {
-                fprintf(stderr, "capture_onevent: ioctl(VIDIOC_DQBUF) failed\n");
                 break;
             }
             
             capture->frame.data = capture->buffer.buffers[buffer.index].data;
             capture->frame.len = capture->buffer.buffers[buffer.index].len;
+            capture->image_sink(&capture->frame, capture->userdata);
 
             if (ioctl(capture->handle, VIDIOC_QBUF, &buffer) != 0)
             {
@@ -441,13 +441,12 @@ void capture_onevent(int fd, int event, void* userdata)
             ret = read(capture->handle, capture->frame.data, capture->device.format.fmt.pix.sizeimage);
             if (ret <= 0)
             {
-                fprintf(stderr, "capture_onevent: read() error\n");
                 break;
             }
 
             capture->frame.len = ret;
+            capture->image_sink(&capture->frame, capture->userdata);
         }
-        capture->image_sink(&capture->frame, capture->userdata);
     } while(1);
 
     return;
