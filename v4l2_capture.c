@@ -14,6 +14,8 @@
 #include <sys/mman.h>
 #include <poll.h>
 #include <sys/epoll.h>
+#include <sys/time.h>
+#include <time.h>
 #include <linux/videodev2.h>
 
 struct frame_buffer
@@ -68,7 +70,7 @@ int init_capture_format(v4l2_capture_t *capture)
 	image_format = capture->device.format;
 	image_format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV422P;
 	image_format.fmt.pix.width = DEFAULT_IMAGE_WIDTH;
-	image_format.fmt.pix.width = DEFAULT_IMAGE_HEIGHT;
+	image_format.fmt.pix.height = DEFAULT_IMAGE_HEIGHT;
 	if(ioctl(capture->handle, VIDIOC_S_FMT, &image_format) == 0)
 	{
 		image_format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -245,10 +247,12 @@ v4l2_capture_t* v4l2_capture_open(const char *device)
 		if (V4L2_CAP_STREAMING & capablity.capabilities)
 		{
 			capture->device.support_stream_io = 1;
+			printf("v4l2_capture_open: '%s' support streaming IO\n", device);
 		}
         else if (V4L2_CAP_READWRITE & capablity.capabilities)
         {
             capture->device.support_rdwr_io = 1;
+			printf("v4l2_capture_open: '%s' support RDWR IO\n", device);
         }
         else
         {
@@ -269,7 +273,7 @@ v4l2_capture_t* v4l2_capture_open(const char *device)
         if (ioctl(capture->handle, VIDIOC_G_PARM, &stream_param) == 0)
         {
             stream_param.parm.capture.timeperframe.numerator = 1;
-            stream_param.parm.capture.timeperframe.denominator = 25;
+            stream_param.parm.capture.timeperframe.denominator = 30;
             ioctl(capture->handle, VIDIOC_S_PARM, &stream_param);
             
             printf("v4l2_capture_open, capture frame rate: %u/%u\n", 
@@ -419,7 +423,8 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 			return NULL;
 		}
 		
-        capture->frame.data = capture->buffer.buffers[buffer.index].data;
+        capture->frame.timestamp = buffer.timestamp.tv_sec * 1000 + buffer.timestamp.tv_usec / 1000;
+		capture->frame.data = capture->buffer.buffers[buffer.index].data;
 		capture->frame.len = capture->buffer.buffers[buffer.index].len;
 		if (ioctl(capture->handle, VIDIOC_QBUF, &buffer) != 0)
 		{
@@ -428,6 +433,8 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 	}
 	else
 	{
+		struct timespec ts_spec;
+		
 		ret = read(capture->handle, capture->frame.data, capture->device.format.fmt.pix.sizeimage);
 		if (ret <= 0)
 		{
@@ -435,6 +442,8 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 			return NULL;
 		}
 
+		clock_gettime(CLOCK_MONOTONIC, &ts_spec);
+		capture->frame.timestamp = ts_spec.tv_sec + ts_spec.tv_nsec / 1000000;
 		capture->frame.len = ret;
 	}
 
@@ -466,6 +475,7 @@ void capture_onevent(int fd, int event, void* userdata)
                 break;
             }
 
+			capture->frame.timestamp = buffer.timestamp.tv_sec * 1000 + buffer.timestamp.tv_usec / 1000;
             capture->frame.data = capture->buffer.buffers[buffer.index].data;
             capture->frame.len = capture->buffer.buffers[buffer.index].len;
             capture->image_sink(&capture->frame, capture->userdata);
@@ -477,11 +487,16 @@ void capture_onevent(int fd, int event, void* userdata)
         }
         else
         {
+			struct timespec ts_spec;
+
             ret = read(capture->handle, capture->frame.data, capture->device.format.fmt.pix.sizeimage);
             if (ret <= 0)
             {
                 break;
             }
+
+			clock_gettime(CLOCK_MONOTONIC, &ts_spec);
+			capture->frame.timestamp = ts_spec.tv_sec + ts_spec.tv_nsec / 1000000;
 
             capture->frame.len = ret;
             capture->image_sink(&capture->frame, capture->userdata);

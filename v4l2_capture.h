@@ -22,6 +22,7 @@ typedef struct imageformat{
 
 typedef struct captured_image{
 	imageformat_t format;
+	uint64_t timestamp;			// in ms
 	uint8_t *data;
 	uint32_t len;
 }captured_image_t;
