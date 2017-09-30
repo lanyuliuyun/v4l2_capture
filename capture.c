@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
     
     g_loop = loop_new(64);
 
-	capture = v4l2_capture_open(camera);
+	capture = v4l2_capture_open(camera, 640, 480, 30, PIXEL_FORMAT_MJPEG);
 	v4l2_capture_start(capture, g_loop, image_sink, NULL);
     
     get_current_timestamp(&ts1);

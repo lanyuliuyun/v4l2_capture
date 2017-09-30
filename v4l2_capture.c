@@ -28,6 +28,12 @@ struct frame_buffer
 struct v4l2_capture
 {
 	int handle;
+
+	int width;
+	int height;
+	int framerate;
+	pixelformat_e format;
+
 	struct{
 		int support_stream_io;
         int support_rdwr_io;
@@ -50,11 +56,8 @@ struct v4l2_capture
     channel_t *channel;
 };
 
-#define DEFAULT_IMAGE_WIDTH (640)
-#define DEFAULT_IMAGE_HEIGHT (480)
-
 static 
-int init_capture_format(v4l2_capture_t *capture)
+int init_capture_format(v4l2_capture_t *capture, int width, int height, int framerate, pixelformat_e format)
 {
 	unsigned image_size;
 	struct v4l2_format image_format;
@@ -68,9 +71,20 @@ int init_capture_format(v4l2_capture_t *capture)
 	}
 
 	image_format = capture->device.format;
-	image_format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUV422P;
-	image_format.fmt.pix.width = DEFAULT_IMAGE_WIDTH;
-	image_format.fmt.pix.height = DEFAULT_IMAGE_HEIGHT;
+
+	image_format.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+	image_format.fmt.pix.width = width;
+	image_format.fmt.pix.height = height;
+
+	if (format == PIXEL_FORMAT_YUYV)
+	{
+		image_format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+	}
+	else if (format == PIXEL_FORMAT_MJPEG)
+	{
+		image_format.fmt.pix.pixelformat = V4L2_PIX_FMT_MJPEG;
+	}
+
 	if(ioctl(capture->handle, VIDIOC_S_FMT, &image_format) == 0)
 	{
 		image_format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -93,6 +107,11 @@ int init_capture_format(v4l2_capture_t *capture)
 			capture->frame.format.pixel_format = PIXEL_FORMAT_YUYV;
 			break;
 		}
+		case V4L2_PIX_FMT_MJPEG:
+		{
+			capture->frame.format.pixel_format = PIXEL_FORMAT_MJPEG;
+			break;
+		}
 		/* TODO: check other pixel format */
 		default:
 		{
@@ -111,6 +130,9 @@ int init_capture_format(v4l2_capture_t *capture)
 	return 0;
 }
 
+/* 此处暂时只实现 MMAP 的 buffer 方式， 
+ * userptr 的方式由于需要用户自己分配 buffer，请用户根据需要自行实现
+ */
 static 
 int init_capture_buffer(v4l2_capture_t *capture)
 {
@@ -206,7 +228,7 @@ int init_capture_buffer(v4l2_capture_t *capture)
 	return 0;
 }
 
-v4l2_capture_t* v4l2_capture_open(const char *device)
+v4l2_capture_t* v4l2_capture_open(const char *device, int width, int height, int framerate, pixelformat_e format)
 {
 	v4l2_capture_t *capture;
 	struct v4l2_capability capablity;
@@ -219,6 +241,11 @@ v4l2_capture_t* v4l2_capture_open(const char *device)
 	}
 
 	capture = (v4l2_capture_t*)malloc(sizeof(*capture));
+
+	capture->width = width;
+	capture->height = height;
+	capture->framerate = framerate;
+	capture->format = format;
 
 	do
 	{
@@ -259,7 +286,7 @@ v4l2_capture_t* v4l2_capture_open(const char *device)
             break;
         }
 
-		if (init_capture_format(capture) != 0)
+		if (init_capture_format(capture, width, height, framerate, format) != 0)
 		{
 			break;
 		}

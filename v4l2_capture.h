@@ -8,8 +8,7 @@
 
 typedef enum pixelformat{
 	PIXEL_FORMAT_YUYV,
-	PIXEL_FORMAT_YUV422P,	/* YUV422 Planar */
-	/* more pixel format */
+	PIXEL_FORMAT_MJPEG,
 }pixelformat_e;
 
 typedef struct imageformat{
@@ -34,7 +33,10 @@ extern "C" {
 struct v4l2_capture;
 typedef struct v4l2_capture v4l2_capture_t;
 
-v4l2_capture_t* v4l2_capture_open(const char *device);
+/* 此处 width/height/framerate/format必须是所指定摄像头支持的
+ * 本身摄像头支持哪些规格，由用户自行事先查询确定。
+ */
+v4l2_capture_t* v4l2_capture_open(const char *device, int width, int height, int framerate, pixelformat_e format);
 void v4l2_capture_close(v4l2_capture_t *capture);
 
 const imageformat_t* v4l2_capture_get_imageformat(v4l2_capture_t *capture);
