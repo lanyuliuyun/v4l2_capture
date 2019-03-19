@@ -1,22 +1,23 @@
 
 #include "v4l2_capture.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <errno.h>
+#include <math.h>
+#include <time.h>
 #include <unistd.h>
+
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <linux/videodev2.h>
+
 #include <poll.h>
 #include <sys/epoll.h>
 #include <sys/time.h>
-#include <time.h>
-#include <linux/videodev2.h>
 
 struct frame_buffer
 {
@@ -50,14 +51,16 @@ struct v4l2_capture
 	
 	captured_image_t frame;
     
+  #ifdef USE_TINYLIB_EVENTLOOP
     void(*image_sink)(const captured_image_t* image, void* userdata);
     void* userdata;
     loop_t* loop;
     channel_t *channel;
+  #endif
 };
 
 static 
-int init_capture_format(v4l2_capture_t *capture, int width, int height, int framerate, pixelformat_e format)
+int init_capture_format(v4l2_capture_t *capture, int width, int height, pixelformat_e format)
 {
 	unsigned image_size;
 	struct v4l2_format image_format;
@@ -66,7 +69,6 @@ int init_capture_format(v4l2_capture_t *capture, int width, int height, int fram
 	capture->device.format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	if (ioctl(capture->handle, VIDIOC_G_FMT, &capture->device.format) < 0)
 	{
-		printf("init_capture_format: ioctl(VIDIOC_G_FMT) failed\n");
 		return -1;
 	}
 
@@ -94,17 +96,17 @@ int init_capture_format(v4l2_capture_t *capture, int width, int height, int fram
 		}
 	}
 
-	image_size = capture->device.format.fmt.pix.bytesperline * capture->device.format.fmt.pix.height;
-	if (capture->device.format.fmt.pix.sizeimage < image_size)
-	{
-		capture->device.format.fmt.pix.sizeimage = image_size;
-	}
-
 	switch (capture->device.format.fmt.pix.pixelformat)
 	{
 		case V4L2_PIX_FMT_YUYV:
 		{
 			capture->frame.format.pixel_format = PIXEL_FORMAT_YUYV;
+            image_size = capture->device.format.fmt.pix.bytesperline * capture->device.format.fmt.pix.height;
+            if (capture->device.format.fmt.pix.sizeimage < image_size)
+            {
+                capture->device.format.fmt.pix.sizeimage = image_size;
+            }
+            
 			break;
 		}
 		case V4L2_PIX_FMT_MJPEG:
@@ -115,7 +117,6 @@ int init_capture_format(v4l2_capture_t *capture, int width, int height, int fram
 		/* TODO: check other pixel format */
 		default:
 		{
-			printf("init_capture_format: unsupported pixel format: 0x%x\n", capture->device.format.fmt.pix.pixelformat);
 			return -1;
 		}
 	}
@@ -139,7 +140,6 @@ int init_capture_buffer(v4l2_capture_t *capture)
 	unsigned i, j;
 	struct v4l2_requestbuffers req_buffer;
 	struct v4l2_buffer buffer;
-	uint32_t max_frame_buffer;
 
 	if (capture->device.support_rdwr_io)
 	{
@@ -147,38 +147,29 @@ int init_capture_buffer(v4l2_capture_t *capture)
 		return 0;
 	}
 
-	max_frame_buffer = 4;
 	do
 	{
 		memset(&req_buffer, 0, sizeof(req_buffer));
-		req_buffer.count = max_frame_buffer;
+		req_buffer.count = 3;
 		req_buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		req_buffer.memory = V4L2_MEMORY_MMAP;
 		if (ioctl(capture->handle, VIDIOC_REQBUFS, &req_buffer) != 0)
 		{
-			printf("init_capture_buffer: ioctl(VIDIOC_REQBUFS) failed\n");
 			return -1;
 		}
 
-		if (req_buffer.count < max_frame_buffer)
+		if (req_buffer.count < 1)
 		{
-			if (1 == max_frame_buffer)
-			{
-				fprintf(stderr, "init_capture_buffer: can NOT request buffer\n");
-				return -1;
-			}
-
-			max_frame_buffer--;			
-			continue;
+            return -1;
 		}
 
 		break;
 	}while(1);
-	
-	capture->buffer.count = max_frame_buffer;
-	capture->buffer.buffers = (struct frame_buffer*)malloc(max_frame_buffer * sizeof(struct frame_buffer));
 
-	for (i = 0; i < max_frame_buffer; ++i)
+	capture->buffer.count = req_buffer.count;
+	capture->buffer.buffers = (struct frame_buffer*)malloc(req_buffer.count * sizeof(struct frame_buffer));
+
+	for (i = 0; i < req_buffer.count; ++i)
 	{
 		memset(&buffer, 0, sizeof(buffer));
 		buffer.index = i;
@@ -186,7 +177,6 @@ int init_capture_buffer(v4l2_capture_t *capture)
 		buffer.memory = V4L2_MEMORY_MMAP;
 		if (ioctl(capture->handle, VIDIOC_QUERYBUF, &buffer) != 0)
 		{
-			printf("init_capture_buffer: ioctl(VIDIOC_QUERYBUF) failed\n");
 			free(capture->buffer.buffers);
 
 			return -1;
@@ -198,7 +188,6 @@ int init_capture_buffer(v4l2_capture_t *capture)
 				capture->handle, buffer.m.offset);
 		if (MAP_FAILED == capture->buffer.buffers[i].data)
 		{
-			printf("init_capture_buffer: mmap() failed\n");
 			for (j = 0; j < i; ++j)
 			{
 				munmap(capture->buffer.buffers[j].data, capture->buffer.buffers[j].len);
@@ -208,22 +197,37 @@ int init_capture_buffer(v4l2_capture_t *capture)
 			return -1;
 		}
 	}
-	
-	for (i = 0; i < max_frame_buffer; ++i)
+
+	for (i = 0; i < req_buffer.count; ++i)
 	{
 		memset(&buffer, 0, sizeof(buffer));
 		buffer.index = i;
 		buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		buffer.memory = V4L2_MEMORY_MMAP;
-
 		if (ioctl(capture->handle, VIDIOC_QBUF, &buffer) != 0)
 		{
-			printf("init_capture_buffer: ioctl(VIDIOC_QBUF) failed\n");
 			free(capture->buffer.buffers);
-			
+
 			return -1;
 		}
 	}
+    
+    if (capture->frame.format.bytesperline == 0)
+    {
+        if (capture->frame.format.pixel_format == PIXEL_FORMAT_YUYV)
+        {
+            capture->frame.format.bytesperline = capture->frame.format.width * 2;
+        }
+        else if (capture->frame.format.pixel_format == PIXEL_FORMAT_MJPEG)
+        {
+            capture->frame.format.bytesperline = capture->buffer.buffers[0].len;
+        }
+    }
+    if (capture->frame.format.image_size == 0)
+    {
+        capture->frame.format.image_size = capture->buffer.buffers[0].len;
+    }
+    capture->frame.data = (uint8_t*)malloc(capture->device.format.fmt.pix.sizeimage);
 
 	return 0;
 }
@@ -233,10 +237,9 @@ v4l2_capture_t* v4l2_capture_open(const char *device, int width, int height, int
 	v4l2_capture_t *capture;
 	struct v4l2_capability capablity;
     struct v4l2_streamparm stream_param;
-	
+
 	if (NULL == device)
 	{
-		printf("v4l2_capture_open: null device path\n");
 		return NULL;
 	}
 
@@ -252,41 +255,36 @@ v4l2_capture_t* v4l2_capture_open(const char *device, int width, int height, int
 		capture->handle = open(device, O_RDWR | O_NONBLOCK | O_CLOEXEC, 0);
 		if (capture->handle < 0)
 		{
-			printf("v4l2_capture_open: open(%s) failed\n", device);
 			break;
 		}
 
 		memset(&capablity, 0, sizeof(capablity));
 		if (ioctl(capture->handle, VIDIOC_QUERYCAP, &capablity) < 0)
 		{
-			printf("v4l2_capture_open: ioctl(VIDIOC_QUERYCAP) failed\n");
 			break;
 		}
 
 		if (0 == (V4L2_CAP_VIDEO_CAPTURE & capablity.capabilities))
 		{
-			printf("v4l2_capture_open: '%s' can NOT capture video\n", device);
 			break;
 		}
-		
+
 		capture->device.support_stream_io = 0;
         capture->device.support_rdwr_io = 0;
 		if (V4L2_CAP_STREAMING & capablity.capabilities)
 		{
 			capture->device.support_stream_io = 1;
-			printf("v4l2_capture_open: '%s' support streaming IO\n", device);
 		}
         else if (V4L2_CAP_READWRITE & capablity.capabilities)
         {
             capture->device.support_rdwr_io = 1;
-			printf("v4l2_capture_open: '%s' support RDWR IO\n", device);
         }
         else
         {
             break;
         }
 
-		if (init_capture_format(capture, width, height, framerate, format) != 0)
+		if (init_capture_format(capture, width, height, format) != 0)
 		{
 			break;
 		}
@@ -295,17 +293,15 @@ v4l2_capture_t* v4l2_capture_open(const char *device, int width, int height, int
         {
             break;
         }
-        
+
         stream_param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         if (ioctl(capture->handle, VIDIOC_G_PARM, &stream_param) == 0)
         {
             stream_param.parm.capture.timeperframe.numerator = 1;
-            stream_param.parm.capture.timeperframe.denominator = 30;
+            stream_param.parm.capture.timeperframe.denominator = framerate;
             ioctl(capture->handle, VIDIOC_S_PARM, &stream_param);
-            
-            printf("v4l2_capture_open, capture frame rate: %u/%u\n", 
-                stream_param.parm.capture.timeperframe.denominator,
-                stream_param.parm.capture.timeperframe.numerator);
+
+            capture->frame.format.fps = (int)ceilf((stream_param.parm.capture.timeperframe.denominator * 1.0) / stream_param.parm.capture.timeperframe.numerator);
         }
 
 		capture->capure_started = 0;
@@ -363,6 +359,7 @@ void v4l2_capture_close(v4l2_capture_t *capture)
         }
 
 		free(capture->buffer.buffers);
+        free(capture->frame.data);
 	}
     else /* if (capture->device.support_rdwr_io) */
     {
@@ -396,11 +393,10 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 
 	if (NULL == capture)
 	{
-		printf("v4l2_capture: bad capture\n");
 		return NULL;
 	}
 
-	waittime = 10;
+	waittime = 100;
 	if (capture->capure_started == 0)
 	{
 		if (capture->device.support_stream_io)
@@ -408,7 +404,6 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 			type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 			if (ioctl(capture->handle, VIDIOC_STREAMON, &type) != 0)
 			{
-				printf("v4l2_capture: ioctl() failed");
 				return NULL;
 			}
 		}
@@ -416,24 +411,13 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 		capture->capure_started = 1;
 		waittime = 2000;
 	}
-	
-	/* TODO: 
-	 * we may register the device handle to a event loop
-	 * and use callback to send the captured image back to the user instead of polling it.
-     */
 
 	memset(&pfd, 0, sizeof(pfd));
 	pfd.fd = capture->handle;
 	pfd.events = POLLIN;
 
 	ret = poll(&pfd, 1, waittime);
-	if (ret < 0)
-	{
-		printf("v4l2_capture: poll() failed");
-		return NULL;
-	}
-
-	if (0 == ret)
+	if (ret <= 0)
 	{
 		return NULL;
 	}
@@ -446,26 +430,20 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 
 		if (ioctl(capture->handle, VIDIOC_DQBUF, &buffer) != 0)
 		{
-			printf("v4l2_capture: ioctl(VIDIOC_DQBUF) failed");
 			return NULL;
 		}
-		
+
         capture->frame.timestamp = buffer.timestamp.tv_sec * 1000 + buffer.timestamp.tv_usec / 1000;
-		capture->frame.data = capture->buffer.buffers[buffer.index].data;
-		capture->frame.len = capture->buffer.buffers[buffer.index].len;
-		if (ioctl(capture->handle, VIDIOC_QBUF, &buffer) != 0)
-		{
-			printf ("v4l2_capture: ioctl(VIDIOC_QBUF)");
-		}
+		memcpy(capture->frame.data, capture->buffer.buffers[buffer.index].data, buffer.bytesused);
+		capture->frame.len = buffer.bytesused;
+		ioctl(capture->handle, VIDIOC_QBUF, &buffer);
 	}
 	else
 	{
 		struct timespec ts_spec;
-		
 		ret = read(capture->handle, capture->frame.data, capture->device.format.fmt.pix.sizeimage);
 		if (ret <= 0)
 		{
-			printf("v4l2_capture: read() error");
 			return NULL;
 		}
 
@@ -476,6 +454,8 @@ const captured_image_t* v4l2_capture(v4l2_capture_t *capture)
 
 	return &capture->frame;
 }
+
+#ifdef USE_TINYLIB_EVENTLOOP
 
 static
 void capture_onevent(int fd, int event, void* userdata)
@@ -596,3 +576,6 @@ void v4l2_capture_stop(v4l2_capture_t *capture)
 
     return;
 }
+
+#endif
+
